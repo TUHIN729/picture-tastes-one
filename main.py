@@ -1,294 +1,243 @@
 #!/usr/bin/env python3
-"""Golden Honey — a wooden honey dipper pouring thick glossy ribbons
-into a glowing amber pool. Pure Python 3.13 standard library only.
-Writes /output/entry.png (1024x1024 PNG)."""
+"""Golden Hour Strawberry — one ripe strawberry on a cream plate.
+
+Pure Python 3.13 standard library. Draws a 1024x1024 PNG to
+/output/entry.png. Deterministic: fixed seed, no time, no network.
+"""
 import math
-import os
 import random
 import struct
 import zlib
 
 W = H = 1024
-random.seed(20261122)
+RNG = random.Random(20261123)
 
-# ---------------------------------------------------------------- pixel buffer
-buf = [bytearray(W * 3) for _ in range(H)]
+# ---------- pixel buffer ----------
+buf = bytearray(W * H * 3)
 
 
-def put(x, y, r, g, b):
+def put(x, y, r, g, b, a=1.0):
     if 0 <= x < W and 0 <= y < H:
-        i = x * 3
-        row = buf[y]
-        row[i] = r
-        row[i + 1] = g
-        row[i + 2] = b
-
-
-def blend(x, y, r, g, b, a):
-    """Alpha-blend a colour onto pixel (x, y); a in 0..1."""
-    if 0 <= x < W and 0 <= y < H and a > 0:
-        i = x * 3
-        row = buf[y]
-        if a >= 1:
-            row[i] = r
-            row[i + 1] = g
-            row[i + 2] = b
+        i = (y * W + x) * 3
+        if a >= 1.0:
+            buf[i], buf[i + 1], buf[i + 2] = int(r), int(g), int(b)
         else:
-            row[i] = int(row[i] + (r - row[i]) * a)
-            row[i + 1] = int(row[i + 1] + (g - row[i + 1]) * a)
-            row[i + 2] = int(row[i + 2] + (b - row[i + 2]) * a)
+            buf[i] = int(buf[i] * (1 - a) + r * a)
+            buf[i + 1] = int(buf[i + 1] * (1 - a) + g * a)
+            buf[i + 2] = int(buf[i + 2] * (1 - a) + b * a)
 
 
-def lerp(c1, c2, t):
-    return (int(c1[0] + (c2[0] - c1[0]) * t),
-            int(c1[1] + (c2[1] - c1[1]) * t),
-            int(c1[2] + (c2[2] - c1[2]) * t))
+def clamp(v, lo=0, hi=255):
+    return lo if v < lo else hi if v > hi else v
 
 
-def disc(cx, cy, rad, color, alpha=1.0):
-    """Soft-edged filled disc."""
-    r0 = int(cx - rad - 1)
-    r1 = int(cx + rad + 1)
-    y0 = int(cy - rad - 1)
-    y1 = int(cy + rad + 1)
-    for y in range(max(0, y0), min(H, y1 + 1)):
-        dy = y - cy
-        for x in range(max(0, r0), min(W, r1 + 1)):
-            dx = x - cx
-            d = math.sqrt(dx * dx + dy * dy)
-            if d <= rad:
-                edge = 1.0 - max(0.0, (d - rad * 0.85) / (rad * 0.15))
-                blend(x, y, color[0], color[1], color[2], alpha * edge)
+def lerp(a, b, t):
+    return a + (b - a) * t
 
 
-def ellipse(cx, cy, rx, ry, color, alpha=1.0):
-    for y in range(max(0, int(cy - ry)), min(H, int(cy + ry) + 1)):
-        t = (y - cy) / ry
-        hw = rx * math.sqrt(max(0.0, 1 - t * t))
-        x0 = int(cx - hw)
-        x1 = int(cx + hw)
-        for x in range(max(0, x0), min(W, x1 + 1)):
-            blend(x, y, color[0], color[1], color[2], alpha)
+def ellipse(cx, cy, rx, ry, color, a=1.0, soft=0.0):
+    """Filled ellipse with optional soft edge (feather in px)."""
+    x0 = max(0, int(cx - rx - soft - 1))
+    x1 = min(W - 1, int(cx + rx + soft + 1))
+    y0 = max(0, int(cy - ry - soft - 1))
+    y1 = min(H - 1, int(cy + ry + soft + 1))
+    for y in range(y0, y1 + 1):
+        dy = (y - cy) / ry
+        for x in range(x0, x1 + 1):
+            dx = (x - cx) / rx
+            d = dx * dx + dy * dy
+            if d <= 1.0:
+                aa = a
+                if soft > 0:
+                    edge = 1.0 - d
+                    aa = a * min(1.0, edge * (rx + ry) / 2 / max(soft, 1))
+                put(x, y, *color, a=aa)
 
 
-def thick_line(x0, y0, x1, y1, width, color, alpha=1.0):
-    steps = int(math.hypot(x1 - x0, y1 - y0)) + 1
-    for i in range(steps + 1):
-        t = i / steps
-        disc(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, width / 2, color, alpha)
+def vgrad_ellipse(cx, cy, rx, ry, top, bot, soft=0.0):
+    """Vertical-gradient ellipse."""
+    x0 = max(0, int(cx - rx - soft - 1))
+    x1 = min(W - 1, int(cx + rx + soft + 1))
+    y0 = max(0, int(cy - ry - soft - 1))
+    y1 = min(H - 1, int(cy + ry + soft + 1))
+    for y in range(y0, y1 + 1):
+        t = (y - (cy - ry)) / (2 * ry)
+        col = tuple(lerp(top[k], bot[k], t) for k in range(3))
+        dy = (y - cy) / ry
+        for x in range(x0, x1 + 1):
+            dx = (x - cx) / rx
+            d = dx * dx + dy * dy
+            if d <= 1.0:
+                aa = 1.0
+                if soft > 0:
+                    aa = min(1.0, (1.0 - d) * (rx + ry) / 2 / max(soft, 1))
+                put(x, y, *col, a=aa)
 
 
-# ---------------------------------------------------------------- background
-# Warm dark vertical gradient: deep espresso top -> warm brown bottom.
-top = (26, 14, 7)
-bot = (58, 32, 12)
+# ---------- background: dark warm wood ----------
 for y in range(H):
-    t = y / (H - 1)
-    c = lerp(top, bot, t * t)
-    row = buf[y]
-    row[0::3] = bytes([c[0]]) * W
-    row[1::3] = bytes([c[1]]) * W
-    row[2::3] = bytes([c[2]]) * W
+    t = y / H
+    base = (
+        lerp(58, 30, t),
+        lerp(38, 20, t),
+        lerp(24, 13, t),
+    )
+    for x in range(W):
+        # soft warm light pool from upper left
+        dx = (x - 380) / 700
+        dy = (y - 300) / 700
+        glow = max(0.0, 1.0 - (dx * dx + dy * dy)) * 26
+        put(x, y, base[0] + glow, base[1] + glow * 0.7, base[2] + glow * 0.4)
 
-# Warm glow behind the hero, top-centre.
-for _ in range(1):
-    disc(512, 430, 430, (96, 52, 14), 0.55)
-    disc(512, 430, 300, (140, 82, 20), 0.45)
-    disc(512, 430, 180, (190, 118, 30), 0.35)
+# wood grain: faint horizontal streaks
+for _ in range(240):
+    gx = RNG.randint(0, W - 1)
+    gy = RNG.randint(0, H - 1)
+    gl = RNG.randint(40, 260)
+    gb = RNG.choice([-14, -10, 10, 14])
+    for s in range(gl):
+        xx = gx + s
+        if xx >= W:
+            break
+        put(xx, gy, clamp(46 + gb), clamp(30 + gb * 0.7), clamp(19 + gb * 0.5), a=0.25)
 
-# Soft golden bokeh dots, deterministic.
-for _ in range(18):
-    bx = random.uniform(40, 984)
-    by = random.uniform(60, 500)
-    br = random.uniform(6, 26)
-    warm = random.choice([(255, 190, 90), (255, 160, 60), (255, 210, 140)])
-    disc(bx, by, br, warm, random.uniform(0.08, 0.20))
+# plank seams
+for sy in (300, 620, 900):
+    for x in range(W):
+        put(x, sy, 12, 8, 5, a=0.55)
+        put(x, sy + 1, 60, 40, 24, a=0.25)
 
-# Dark wooden table band at the very bottom.
-for y in range(930, H):
-    t = (y - 930) / 94
-    c = lerp((40, 22, 9), (24, 13, 5), t)
-    row = buf[y]
-    row[0::3] = bytes([c[0]]) * W
-    row[1::3] = bytes([c[1]]) * W
-    row[2::3] = bytes([c[2]]) * W
+# ---------- plate shadow + plate ----------
+ellipse(512, 700, 400, 150, (10, 6, 4), a=0.55, soft=26)
+vgrad_ellipse(512, 660, 385, 150, (252, 246, 232), (214, 200, 178), soft=4)
+ellipse(512, 660, 385, 150, (255, 255, 250), a=0.18, soft=30)
+# plate rim
+for k in range(6):
+    ry = 150 - k * 3
+    ellipse(512, 660, 385 - k * 2, ry, (196, 182, 160), a=0.10, soft=2)
 
-# ---------------------------------------------------------------- honey pool
-POOL_CX, POOL_CY, POOL_RX, POOL_RY = 512, 800, 430, 165
-# Pool base: radial amber gradient with slow swirl ripples.
-deep = (150, 78, 6)
-mid = (222, 138, 18)
-bright = (255, 178, 44)
-for y in range(POOL_CY - POOL_RY, POOL_CY + POOL_RY + 1):
-    ty = (y - POOL_CY) / POOL_RY
-    hw = POOL_RX * math.sqrt(max(0.0, 1 - ty * ty))
-    for x in range(int(POOL_CX - hw), int(POOL_CX + hw) + 1):
-        tx = (x - POOL_CX) / POOL_RX
-        r = math.sqrt(tx * tx + ty * ty)
-        ang = math.atan2(ty, tx)
-        swirl = math.sin(ang * 3 + r * 9.0) * 0.5 + 0.5
-        # brighter toward the centre-top, deeper at the rim
-        t = max(0.0, 1 - r)
-        c = lerp(deep, mid, t)
-        c = lerp(c, bright, t * t * 0.55 + swirl * 0.10 * t)
-        put(x, y, c[0], c[1], c[2])
+# ---------- strawberry body ----------
+# profile: wide shoulders, tapering to a soft point at the bottom
+CX, TOP, BOT = 512, 300, 830
+SH = 250  # half-width at shoulders
 
-# Pool rim light: bright crescent along the top edge.
-for i in range(240):
-    t = i / 239
-    ang = math.pi * (1.08 + t * 0.84)
-    x = POOL_CX + math.cos(ang) * POOL_RX * 0.97
-    y = POOL_CY + math.sin(ang) * POOL_RY * 0.97
-    disc(x, y, 5 + 3 * math.sin(t * math.pi), (255, 214, 110), 0.38)
 
-# Specular glints on the pool surface.
-disc(430, 760, 34, (255, 226, 140), 0.75)
-disc(430, 760, 16, (255, 240, 190), 0.9)
-disc(610, 815, 22, (255, 210, 110), 0.6)
-disc(560, 745, 12, (255, 235, 170), 0.8)
+def half_width(y):
+    t = (y - TOP) / (BOT - TOP)  # 0 top .. 1 bottom
+    if t < 0 or t > 1:
+        return 0.0
+    # rounded shoulders: rise fast from a narrow crown, full width near
+    # t=0.45, then taper to a soft point at the bottom
+    rise = math.sin(math.pi / 2 * min(1.0, t * 2.2)) ** 0.8
+    taper = 1.0 - max(0.0, (t - 0.5) / 0.5) ** 2.0 * 0.98
+    return SH * rise * taper
 
-# ---------------------------------------------------------------- honeycomb chunk (left of pool)
-COMB_CX, COMB_CY = 235, 845
-comb_base = (214, 128, 16)
-comb_dark = (160, 88, 8)
-comb_light = (255, 190, 70)
-# Chunk body: a rough hexagonal slab.
-for k in range(7):
-    ang = math.pi * 2 * k / 7
-    disc(COMB_CX + math.cos(ang) * 78, COMB_CY + math.sin(ang) * 52,
-         46, comb_base, 0.95)
-disc(COMB_CX, COMB_CY, 92, comb_base, 1.0)
-# Hex cells.
-s = 30.0
-for row_i in range(-2, 3):
-    for col_i in range(-2, 3):
-        cx = COMB_CX + col_i * s * 1.5 + (s * 0.75 if row_i % 2 else 0)
-        cy = COMB_CY + row_i * s * 0.866
-        if math.hypot(cx - COMB_CX, (cy - COMB_CY) * 1.5) > 88:
+
+for y in range(TOP, BOT + 1):
+    hw = half_width(y)
+    if hw <= 0:
+        continue
+    t = (y - TOP) / (BOT - TOP)
+    # vertical gradient: bright lit red -> deep crimson
+    r = lerp(238, 150, t)
+    g = lerp(64, 18, t)
+    b = lerp(52, 22, t)
+    # horizontal shading: light from upper left, shadow right edge
+    for x in range(int(CX - hw), int(CX + hw) + 1):
+        u = (x - (CX - hw)) / max(1.0, 2 * hw)  # 0 left .. 1 right
+        shade = 1.0 - 0.35 * max(0.0, (u - 0.55) / 0.45)
+        lit = 1.0 + 0.22 * max(0.0, 1.0 - abs(u - 0.28) * 3.2)
+        put(x, y, clamp(r * shade * lit), clamp(g * shade * lit),
+            clamp(b * shade * lit))
+
+# seeds: small pale achenes in staggered rows on the body, with a
+# little jitter so they read as organic, not printed
+seed_rng = random.Random(777)
+for row in range(11):
+    y = TOP + 55 + row * 44
+    n = 9 - abs(row - 4) // 2
+    for k in range(n):
+        fx = (k + 0.5) / n + (0.03 if row % 2 else -0.03)
+        jx = seed_rng.uniform(-5, 5)
+        jy = seed_rng.uniform(-4, 4)
+        x = CX + (fx - 0.5) * 2 * half_width(y) * 0.88 + jx
+        y2 = y + jy
+        if abs(x - CX) > half_width(y2) - 14:
             continue
-        # cell fill
-        for k in range(6):
-            a0 = math.pi / 3 * k + math.pi / 6
-            a1 = math.pi / 3 * (k + 1) + math.pi / 6
-            x0 = cx + math.cos(a0) * s * 0.62
-            y0 = cy + math.sin(a0) * s * 0.62
-            x1 = cx + math.cos(a1) * s * 0.62
-            y1 = cy + math.sin(a1) * s * 0.62
-            thick_line(x0, y0, x1, y1, 3, comb_dark, 0.9)
-        disc(cx, cy, s * 0.42, comb_light, 0.85)
-        disc(cx - 4, cy - 5, s * 0.2, (255, 225, 150), 0.8)
-# Honey dripping off the comb.
-disc(COMB_CX + 40, COMB_CY + 96, 12, (240, 150, 20), 1.0)
-disc(COMB_CX + 40, COMB_CY + 118, 8, (240, 150, 20), 1.0)
+        # seed dimple shadow then pale seed
+        ellipse(x + 1, y2 + 2, 7, 10, (120, 20, 16), a=0.6, soft=3)
+        ellipse(x, y2, 6, 9, (250, 226, 170), a=0.95, soft=2)
+        ellipse(x - 2, y2 - 3, 2, 3, (255, 248, 220), a=0.9, soft=1)
 
-# ---------------------------------------------------------------- honey dipper
-# Handle: diagonal wooden rod from top-right down to the head.
-thick_line(742, 96, 636, 296, 38, (139, 90, 43), 1.0)
-thick_line(742, 96, 636, 296, 26, (168, 112, 54), 1.0)
-thick_line(736, 100, 640, 288, 8, (196, 140, 72), 0.9)
-# Handle end knob.
-disc(748, 90, 22, (139, 90, 43), 1.0)
-disc(748, 90, 14, (168, 112, 54), 1.0)
+# gloss highlight on the upper-left curve (small, tight, glossy)
+ellipse(430, 420, 70, 42, (255, 210, 200), a=0.22, soft=26)
+ellipse(420, 402, 34, 18, (255, 240, 235), a=0.38, soft=12)
+# second smaller gloss lower right
+ellipse(600, 620, 60, 34, (255, 190, 175), a=0.16, soft=22)
 
-# Dipper head: stacked grooved rings, tilted slightly (bigger, bolder).
-HEAD_CX, HEAD_CY = 618, 340
-for i, (dy, rx) in enumerate([(-68, 80), (-44, 96), (-18, 104),
-                              (8, 104), (34, 96), (58, 80)]):
-    wood = (150, 98, 46) if i % 2 == 0 else (126, 80, 36)
-    ellipse(HEAD_CX, HEAD_CY + dy, rx, 30, wood, 1.0)
-    ellipse(HEAD_CX, HEAD_CY + dy - 7, rx - 7, 20,
-            (176, 118, 58), 0.55)
-# Honey coating the lower half of the head, glossy and dripping.
-for i, (dy, rx) in enumerate([(8, 104), (34, 96), (58, 80)]):
-    ellipse(HEAD_CX, HEAD_CY + dy, rx, 28, (232, 146, 20), 0.95)
-    ellipse(HEAD_CX - 8, HEAD_CY + dy - 4, rx - 26, 16,
-            (255, 196, 80), 0.8)
-# Drips hanging off the head.
-disc(HEAD_CX - 68, HEAD_CY + 88, 13, (240, 152, 22), 1.0)
-disc(HEAD_CX - 68, HEAD_CY + 112, 8, (240, 152, 22), 1.0)
-disc(HEAD_CX + 76, HEAD_CY + 82, 11, (240, 152, 22), 1.0)
-
-# ---------------------------------------------------------------- pouring ribbons
-def bezier(p0, p1, p2, p3, t):
-    mt = 1 - t
-    x = (mt ** 3 * p0[0] + 3 * mt * mt * t * p1[0]
-         + 3 * mt * t * t * p2[0] + t ** 3 * p3[0])
-    y = (mt ** 3 * p0[1] + 3 * mt * mt * t * p1[1]
-         + 3 * mt * t * t * p2[1] + t ** 3 * p3[1])
-    return x, y
+# ---------- calyx: green leaves fanning from the top ----------
+LEAF = (46, 122, 44)
+LEAF_D = (28, 84, 30)
 
 
-def ribbon(p0, p1, p2, p3, w0, w1, color, hi_color):
-    steps = 90
-    prev = None
-    for i in range(steps + 1):
-        t = i / steps
-        x, y = bezier(p0, p1, p2, p3, t)
-        w = w0 + (w1 - w0) * t
-        # slight wobble so the ribbon looks poured, not drawn
-        wob = 1 + 0.10 * math.sin(t * 14.0)
-        disc(x, y, w * wob / 2, color, 1.0)
-        if prev is not None:
-            disc((x + prev[0]) / 2, (y + prev[1]) / 2,
-                 w * wob / 2, color, 1.0)
-        prev = (x, y)
-    # glossy highlight thread, offset up-left
-    prev = None
-    for i in range(steps + 1):
-        t = i / steps
-        x, y = bezier(p0, p1, p2, p3, t)
-        w = (w0 + (w1 - w0) * t) * 0.30
-        disc(x - w * 0.9, y - 2, max(2.0, w / 2), hi_color, 0.85)
-        if prev is not None:
-            disc((x + prev[0]) / 2 - w * 0.9, (y + prev[1]) / 2 - 2,
-                 max(2.0, w / 2), hi_color, 0.85)
-        prev = (x, y)
+def leaf(x0, y0, x1, y1, x2, y2, col):
+    """Filled triangle leaf with a soft edge."""
+    minx, maxx = max(0, min(x0, x1, x2)), min(W - 1, max(x0, x1, x2))
+    miny, maxy = max(0, min(y0, y1, y2)), min(H - 1, max(y0, y1, y2))
+    den = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
+    if den == 0:
+        return
+    for y in range(miny, maxy + 1):
+        for x in range(minx, maxx + 1):
+            a1 = ((y1 - y2) * (x - x2) + (x2 - x1) * (y - y2)) / den
+            a2 = ((y2 - y0) * (x - x2) + (x0 - x2) * (y - y2)) / den
+            a3 = 1 - a1 - a2
+            if a1 >= 0 and a2 >= 0 and a3 >= 0:
+                put(x, y, *col, a=0.97)
 
 
-# Main ribbon: head -> pool, thick and glossy.
-ribbon((612, 424), (560, 480), (640, 570), (560, 700),
-       50, 66, (236, 148, 20), (255, 205, 96))
-# Second ribbon: thinner, curling left into the pool.
-ribbon((596, 430), (500, 490), (470, 580), (430, 690),
-       26, 34, (228, 138, 16), (255, 200, 90))
-# Third ribbon: thin thread on the right.
-ribbon((652, 426), (690, 500), (660, 600), (640, 700),
-       16, 22, (240, 152, 22), (255, 208, 100))
+leaf(512, 322, 388, 262, 462, 336, LEAF)
+leaf(512, 322, 636, 262, 562, 336, LEAF_D)
+leaf(512, 322, 462, 232, 496, 316, LEAF_D)
+leaf(512, 322, 562, 230, 530, 316, LEAF)
+leaf(512, 322, 512, 214, 540, 312, LEAF_D)
+# short angled stem stub
+for s in range(26):
+    put(512 + s // 2, 216 - s // 2, 96, 128, 60, a=0.95)
+    put(513 + s // 2, 216 - s // 2, 70, 96, 44, a=0.9)
 
-# Splash crown where the main ribbon hits the pool.
-for k, ang in enumerate([200, 225, 250, 275, 300, 325, 350]):
-    a = math.radians(ang)
-    x = 560 + math.cos(a) * 46
-    y = 700 + math.sin(a) * 20
-    disc(x, y, 12 - abs(ang - 275) * 0.04, (255, 190, 70), 1.0)
-disc(560, 690, 26, (255, 196, 80), 0.95)
-disc(560, 686, 12, (255, 228, 150), 0.9)
-# Ripple rings around the impact point.
-for r in (52, 84, 118):
-    for i in range(120):
-        a = math.pi * 2 * i / 120
-        x = 560 + math.cos(a) * r
-        y = 700 + math.sin(a) * r * 0.38
-        disc(x, y, 3.5, (255, 200, 90), 0.5)
+# ---------- juice droplets on the plate ----------
+for (dx, dy, dr) in ((330, 700, 9), (700, 720, 7), (660, 690, 5), (360, 740, 6)):
+    ellipse(dx, dy, dr, int(dr * 0.7), (235, 120, 90), a=0.55, soft=3)
+    ellipse(dx - 2, dy - 2, 2, 2, (255, 220, 200), a=0.8, soft=1)
 
-# ---------------------------------------------------------------- vignette (soft dark corners)
-for cx, cy in [(-60, -60), (W + 60, -60), (-60, H + 60), (W + 60, H + 60)]:
-    disc(cx, cy, 420, (10, 5, 2), 0.35)
+# ---------- vignette ----------
+for y in range(H):
+    for x in range(W):
+        dx = (x - W / 2) / (W / 2)
+        dy = (y - H / 2) / (H / 2)
+        d = dx * dx + dy * dy
+        if d > 0.75:
+            dark = min(0.42, (d - 0.75) * 0.55)
+            i = (y * W + x) * 3
+            buf[i] = int(buf[i] * (1 - dark))
+            buf[i + 1] = int(buf[i + 1] * (1 - dark))
+            buf[i + 2] = int(buf[i + 2] * (1 - dark))
 
-# ---------------------------------------------------------------- PNG encode
+# ---------- PNG encode (stdlib only) ----------
 def chunk(typ, data):
     c = struct.pack(">I", len(data)) + typ + data
-    c += struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF)
-    return c
+    return c + struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF)
 
 
-raw = b"".join(b"\x00" + bytes(row) for row in buf)
 ihdr = struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0)
-png = (b"\x89PNG\r\n\x1a\n"
-       + chunk(b"IHDR", ihdr)
-       + chunk(b"IDAT", zlib.compress(raw, 9))
-       + chunk(b"IEND", b""))
+raw = bytearray()
+for y in range(H):
+    raw.append(0)
+    raw += buf[y * W * 3:(y + 1) * W * 3]
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b"")
 
+import os
 os.makedirs("/output", exist_ok=True)
 with open("/output/entry.png", "wb") as f:
     f.write(png)

@@ -4,12 +4,12 @@
 [![rank](https://make.fun/badge/the-picture-that-tastes-of-one-20261122-2047/TUHIN729/picture-tastes-one/rank.svg)](https://make.fun/bounty/the-picture-that-tastes-of-one-20261122-2047/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=the-picture-that-tastes-of-one-20261122-2047)
 [![reward](https://make.fun/badge/the-picture-that-tastes-of-one-20261122-2047/TUHIN729/picture-tastes-one/reward.svg)](https://make.fun/bounty/the-picture-that-tastes-of-one-20261122-2047?utm_source=github&utm_medium=readme&utm_campaign=the-picture-that-tastes-of-one-20261122-2047)
 
-Golden Honey — one picture that tastes of a single ingredient. A wooden honey
-dipper pours thick, glossy ribbons of honey into a glowing amber pool, with a
-chunk of honeycomb at the edge, warm dark background and soft bokeh. Drawn
-entirely in code: pure Python 3.13 standard library, no image libraries, no
-network — every pixel is computed, from the swirling pool to the honeycomb
-cells, so the picture is deterministic and byte-identical on every run.
+Golden Hour Strawberry — one picture that tastes of a single ingredient. One
+ripe, glossy strawberry with its green calyx and stem, resting on a cream
+plate over a dark wooden table in warm light. Drawn entirely in code: pure
+Python 3.13 standard library, no image libraries, no network — every pixel
+is computed, from the seed dimples to the wood grain, so the picture is
+deterministic and byte-identical on every run.
 
 ## Run it
 
